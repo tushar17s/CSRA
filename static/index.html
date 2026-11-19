@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Customer Support RAG Assistant</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: Inter, "Segoe UI", sans-serif;
+        color: #172033;
+        background: #f3f6fb;
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        max-width: 860px;
+        margin: 0 auto;
+        padding: 32px 18px 56px;
+      }
+
+      header { margin-bottom: 24px; }
+      h1 { margin-bottom: 8px; font-size: clamp(1.7rem, 5vw, 2.4rem); }
+      header p, .muted { color: #5e6b80; }
+
+      .panel {
+        margin: 16px 0;
+        padding: 22px;
+        border: 1px solid #dfe5ef;
+        border-radius: 14px;
+        background: #fff;
+        box-shadow: 0 8px 24px rgb(23 32 51 / 5%);
+      }
+
+      label { display: block; margin-bottom: 8px; font-weight: 650; }
+      textarea, input[type="file"] {
+        width: 100%;
+        margin-bottom: 12px;
+        padding: 12px;
+        border: 1px solid #cbd4e2;
+        border-radius: 8px;
+        font: inherit;
+      }
+      textarea { min-height: 92px; resize: vertical; }
+
+      button {
+        padding: 10px 16px;
+        border: 0;
+        border-radius: 8px;
+        color: #fff;
+        background: #3157c8;
+        font: inherit;
+        font-weight: 650;
+        cursor: pointer;
+      }
+      button:disabled { opacity: .6; cursor: wait; }
+
+      .status { min-height: 1.4em; margin: 12px 0 0; color: #43516a; }
+      .error { color: #a32323; }
+      .answer { white-space: pre-wrap; line-height: 1.55; }
+      .passage {
+        margin-top: 12px;
+        padding: 14px;
+        border-left: 3px solid #91a8f3;
+        border-radius: 4px;
+        background: #f5f7fc;
+      }
+      .passage p { margin: 8px 0 0; line-height: 1.5; }
+      .similarity { color: #5e6b80; font-size: .88rem; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Customer Support RAG Assistant</h1>
+      <p>Ask a support question and review the knowledge-base passages behind the answer.</p>
+    </header>
+
+    <main>
+      <section class="panel" aria-labelledby="chat-heading">
+        <h2 id="chat-heading">Ask a question</h2>
+        <form id="chat-form">
+          <label for="question">Support question</label>
+          <textarea id="question" maxlength="2000" required
+            placeholder="Example: How long does a password reset link last?"></textarea>
+          <button id="ask-button" type="submit">Ask support assistant</button>
+        </form>
+        <p id="chat-status" class="status" role="status" aria-live="polite"></p>
+        <div id="answer-area" hidden>
+          <h3>Answer</h3>
+          <p id="answer" class="answer"></p>
+          <h3>Retrieved sources</h3>
+          <div id="sources"></div>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="upload-heading">
+        <h2 id="upload-heading">Add a support article</h2>
+        <p class="muted">Upload a UTF-8 .txt or .md file (up to 1 MB). It will be indexed before the next question.</p>
+        <form id="upload-form">
+          <label for="document">Knowledge-base document</label>
+          <input id="document" name="file" type="file" accept=".txt,.md,text/plain,text/markdown" required>
+          <button id="upload-button" type="submit">Add document</button>
+        </form>
+        <p id="upload-status" class="status" role="status" aria-live="polite"></p>
+      </section>
+    </main>
+
+    <script>
+      const chatForm = document.querySelector("#chat-form");
+      const chatStatus = document.querySelector("#chat-status");
+      const answerArea = document.querySelector("#answer-area");
+      const answerText = document.querySelector("#answer");
+      const sourcesArea = document.querySelector("#sources");
+      const askButton = document.querySelector("#ask-button");
+      const uploadForm = document.querySelector("#upload-form");
+      const uploadStatus = document.querySelector("#upload-status");
+      const uploadButton = document.querySelector("#upload-button");
+
+      function showStatus(element, message, isError = false) {
+        element.textContent = message;
+        element.classList.toggle("error", isError);
+      }
+
+      async function readError(response) {
+        const body = await response.json().catch(() => ({}));
+        return body.detail || `Request failed (${response.status}).`;
+      }
+
+      chatForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        answerArea.hidden = true;
+        sourcesArea.replaceChildren();
+        showStatus(chatStatus, "Searching the support knowledge base...");
+        askButton.disabled = true;
+
+        try {
+          const response = await fetch("/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ question: document.querySelector("#question").value }),
+          });
+          if (!response.ok) throw new Error(await readError(response));
+
+          const result = await response.json();
+          answerText.textContent = result.answer;
+          if (result.passages.length === 0) {
+            const note = document.createElement("p");
+            note.className = "muted";
+            note.textContent = "No sufficiently relevant passages were found.";
+            sourcesArea.append(note);
+          } else {
+            for (const passage of result.passages) {
+              const article = document.createElement("article");
+              article.className = "passage";
+
+              const heading = document.createElement("strong");
+              heading.textContent = passage.source;
+              const score = document.createElement("span");
+              score.className = "similarity";
+              score.textContent = ` (similarity ${passage.similarity})`;
+              const text = document.createElement("p");
+              text.textContent = passage.text;
+
+              heading.append(score);
+              article.append(heading, text);
+              sourcesArea.append(article);
+            }
+          }
+          answerArea.hidden = false;
+          showStatus(chatStatus, "Answer ready.");
+        } catch (error) {
+          showStatus(chatStatus, error.message, true);
+        } finally {
+          askButton.disabled = false;
+        }
+      });
+
+      uploadForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const fileInput = document.querySelector("#document");
+        if (!fileInput.files.length) return;
+        const formData = new FormData();
+        formData.append("file", fileInput.files[0]);
+        showStatus(uploadStatus, "Saving the support article...");
+        uploadButton.disabled = true;
+
+        try {
+          const response = await fetch("/documents", {
+            method: "POST",
+            body: formData,
+          });
+          if (!response.ok) throw new Error(await readError(response));
+
+          const result = await response.json();
+          showStatus(uploadStatus, `${result.filename}: ${result.message}`);
+          uploadForm.reset();
+        } catch (error) {
+          showStatus(uploadStatus, error.message, true);
+        } finally {
+          uploadButton.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>
